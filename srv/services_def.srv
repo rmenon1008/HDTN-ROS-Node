@@ -1,1 +1,5 @@
-bool sending = fa
+int8 mode
+string send_from_dir
+string destination
+---
+int8 status
