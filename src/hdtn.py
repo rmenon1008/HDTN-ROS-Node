@@ -2,6 +2,8 @@ import os
 import shutil
 import json
 import subprocess
+import logging
+import signal
 
 """
 Current plan:
@@ -21,33 +23,22 @@ Receiving:
     - When receiving is enabled, allow HDTN to receive items and
       store them in the provided directory
     - Provide a callback for when an item is received or on an error
-
-Transfer:
-    - When transfer is enabled, allow HDTN to transfer items
-    - Provide a callback for when an item is transferred or on an error
 """
 
-settings = {
-    "global": {
-        "log_level": "info",
-        "log_file": "hdtn.log",
-    },
-    "send": {
-        "enabled": True,
-        "source_dir": "send",
-    },
-    "receive": {
-        "enabled": True,
-        "target_dir": "received",
-    },
-}
 
 class HDTN:
     def __init__(self, settings, hdtn_root=None):
         # Ensure the HDTN is available and built
+        # Set up a folder for configuration files
+        if hdtn_root is None:
+            hdtn_root = os.environ.get(
+                'HDTN_SOURCE_ROOT', os.getcwd() + "/HDTN")
+        self.hdtn_root = os.path.abspath(hdtn_root)
+        os.environ['HDTN_SOURCE_ROOT'] = self.hdtn_root
+
         self.build_root = self._find_build_root(hdtn_root)
         self.config_dir = self._create_config_dir()
-        
+
         # Class parameters
         self.settings = settings
 
@@ -57,24 +48,22 @@ class HDTN:
         self.bp_recv_sp = None
 
     def _find_build_root(self, hdtn_root=None):
-        if hdtn_root is None:
-            hdtn_root = os.environ.get('HDTN_SOURCE_ROOT', os.getcwd() + "/HDTN")
-        
         if not os.path.exists(hdtn_root):
+            logging.error("HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT is set or /HDTN is in the current directory.")
             raise Exception(
                 "HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT is set or /HDTN is in the current directory.")
-        if not os.path.exists(hdtn_root + "/build"):
+        if not os.path.exists(os.path.join(hdtn_root, "build")):
             raise Exception("HDTN has not been built.")
 
         return hdtn_root + "/build"
 
     def _create_config_dir(self):
-        dir = 'hdtn_config'
+        dir = os.path.join(self.build_root, "config_hdtnpy/")
         if os.path.exists(dir):
             shutil.rmtree(dir)
         os.makedirs(dir)
 
-        return os.getcwd() + "/" + dir
+        return dir
 
     def _set_contact_plan(self, contact_plan):
         """
@@ -82,6 +71,7 @@ class HDTN:
         :param contact_plan: A dictionary that follows the HDTN contact plan format
         """
         if contact_plan is None:
+            logging.error("Contact plan does not exist")
             raise Exception("Contact plan does not exist")
         with open(self.config_dir + "contact_plan.json", "w") as f:
             json.dump(contact_plan, f)
@@ -93,95 +83,149 @@ class HDTN:
         """
         if configs is None:
             raise Exception("No configs provided")
-        
+
         if "hdtn_one" in configs:
             with open(self.config_dir + "hdtn_one_config.json", "w") as f:
-                json.dump(configs.hdtn_one, f)
-        
+                json.dump(configs["hdtn_one"], f)
+
         if "bp_send" in configs:
             with open(self.config_dir + "bp_send_config.json", "w") as f:
-                json.dump(configs.bp_send, f)
+                json.dump(configs["bp_send"], f)
 
         if "bp_recv" in configs:
             with open(self.config_dir + "bp_recv_config.json", "w") as f:
-                json.dump(configs.bp_recv, f)
+                json.dump(configs["bp_recv"], f)
 
+    def _get_template_config(self, type):
+        # Get the template config from ./config_templates
+        path = os.path.join(os.path.dirname(__file__),
+                            "config_templates", type + ".json")
 
-    def _gen_hdtn_one_config(self, settings):
-        # TODO
-        return settings
+        with open(path, 'r') as f:
+            data = json.load(f)
 
-    def _gen_bp_send_config(self, settings):
-        # TODO
-        return settings
+        return data
 
-    def _gen_bp_recv_config(self, settings):
-        # TODO
-        return settings
+    def _gen_configs(self):
+        logging.info("Generating config files...")
 
-    def start(self):
-        # Some translation step to convert the settings into a config file
-        hdtn_config = self._gen_hdtn_one_config(self.settings)
+        def hdtn_one_config():
+            return self._get_template_config("hdtn_one")
 
-        # Generate the config files
+        def bp_send_config():
+            return self._get_template_config("bp_send")
+
+        def bp_recv_config():
+            return self._get_template_config("bp_recv")
+
         configs = {
-            "hdtn_one": self._gen_hdtn_one_config(),
+            "hdtn_one": hdtn_one_config(),
         }
         if self.settings["send"]["enabled"]:
-            configs["bp_send"] = self._gen_bp_send_config()
+            configs["bp_send"] = bp_send_config()
         if self.settings["receive"]["enabled"]:
-            configs["bp_recv"] = self._gen_bp_recv_config()
-            
-        self._set_config_files(configs)
+            configs["bp_recv"] = bp_recv_config()
+        return configs
 
-        # Start the HDTN one instance
-        self.hdtn_sp = subprocess.Popen([self.build_root + "/src/hdtn/hdtn"])
+    def _gen_start_params(self):
+        logging.info("Generating start parameters...")
 
+        def hdtn_one_start_params():
+            # TODO
+            config_arg = '--hdtn-config-file={}'.format(
+                os.path.join(self.config_dir, "hdtn_one_config.json"))
+            return [config_arg]
+
+        def bp_send_start_params():
+            # TODO
+            config_arg = '--outducts-config-file={}'.format(
+                os.path.join(self.config_dir, "bp_send_config.json"))
+            send_dir_arg = "--file-or-folder-path={}".format(
+                os.path.join(self.hdtn_root, self.settings["send"]["send_dir"]))
+            return ["--use-bp-version-7", "--max-bundle-size-bytes=4000000", send_dir_arg, "--my-uri-eid=ipn:1.1", "--dest-uri-eid=ipn:2.1", config_arg]
+
+        def bp_recv_start_params():
+            # TODO
+            config_arg = '--inducts-config-file={}'.format(
+                os.path.join(self.config_dir, "bp_recv_config.json"))
+            return ["--save-directory=received", "--my-uri-eid=ipn:2.1", config_arg]
+
+        params = {
+            "hdtn_one": hdtn_one_start_params(),
+        }
         if self.settings["send"]["enabled"]:
-            self.bp_send_sp = subprocess.Popen([self.build_root + "/src/hdtn/bp_send_file"])
-        
+            params["bp_send"] = bp_send_start_params()
         if self.settings["receive"]["enabled"]:
-            self.bp_recv_sp = subprocess.Popen([self.build_root + "/src/hdtn/bp_recv_file"])
-        
+            params["bp_recv"] = bp_recv_start_params()
+        return params
+
+    def _start_subprocesses(self, start_params):
+        logging.info("Starting subprocesses...")
+
+        self.hdtn_sp = subprocess.Popen(
+            [self.build_root + "/module/hdtn_one_process/hdtn-one-process", *start_params["hdtn_one"]])
+        if self.settings["send"]["enabled"]:
+            self.bp_send_sp = subprocess.Popen(
+                [self.build_root + "/common/bpcodec/apps/bpsendfile", *start_params["bp_send"]])
+        if self.settings["receive"]["enabled"]:
+            self.bp_recv_sp = subprocess.Popen(
+                [self.build_root + "/common/bpcodec/apps/bpreceivefile", *start_params["bp_recv"]])
+
+    def _kill_subprocesses(self):
+        logging.info("Killing subprocesses...")
+
+        if self.hdtn_sp is not None:
+            self.hdtn_sp.kill()
+        if self.bp_send_sp is not None:
+            self.bp_send_sp.kill()
+        if self.bp_recv_sp is not None:
+            self.bp_recv_sp.kill()
+
+    def _stop_subprocess(self, sp):
+        try:
+            if sp is not None:
+                logging.info("Stopping subprocess " + str(sp))
+                sp.send_signal(signal.SIGINT)
+                sp.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logging.warning("Subprocess " + str(sp) + " did not stop cleanly")
+            sp.kill()
+
+    def start(self):
+        logging.info("Starting HDTN instance...")
+        # Generate the config files
+        configs = self._gen_configs()
+        self._set_config_files(configs)
+        start_params = self._gen_start_params()
+
+        # Start the HDTN subprocesses
+        self._start_subprocesses(start_params)
+
         # Set up callbacks for sending and receiving items
         pass
 
-    def get_status(self):
+    def poll_subprocesses(self):
         # Get the status of the HDTN instances
-        hdtn_one_status = self.hdtn_sp.poll()
-        bp_send_status = self.bp_send_sp.poll()
-        bp_recv_status = self.bp_recv_sp.poll()
-
-        return {
-            "hdtn_one": hdtn_one_status,
-            "bp_send": bp_send_status,
-            "bp_recv": bp_recv_status,
+        stat = {
+            "hdtn_one": None,
+            "bp_send": None,
+            "bp_recv": None,
         }
+
+        if self.hdtn_sp is not None:
+            stat["hdtn_one"] = self.hdtn_sp.poll()
+
+        if self.bp_send_sp is not None:
+            stat["bp_send"] = self.bp_send_sp.poll()
+
+        if self.bp_recv_sp is not None:
+            stat["bp_recv"] = self.bp_recv_sp.poll()
+
+        return stat
 
     def stop(self):
         # Stop the HDTN instance
-
-        pass
-
-    def send_item(self, item_path):
-        """
-        Sends an item to the HDTN instance
-        :param item_path: The absolute path to a file or directory to be copied to the remote instance
-        """
-
-        # if self.mode != "send":
-        #     raise Exception("Must be in send mode to send items")
-        # if not os.path.exists(item_path):        #     raise Exception("Item path does not exist")
-
-
-    
-    def receive_item(self, item_path):
-        """
-        Receives an item from the HDTN instance
-        :param item_path: The absolute path to a directory to copy the item to
-        """
-
-        # if self.mode != "receive":
-        #     raise Exception("Must be in receive mode to receive items")
-        # if not os.path.exists(item_path):
-        #     raise Exception("Item path does not exist")
+        logging.info("Stopping HDTN instance...")
+        self._stop_subprocess(self.hdtn_sp)
+        self._stop_subprocess(self.bp_send_sp)
+        self._stop_subprocess(self.bp_recv_sp)
