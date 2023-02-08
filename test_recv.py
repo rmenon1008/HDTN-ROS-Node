@@ -1,34 +1,31 @@
 from src.hdtn import HDTN
 import time
 import logging
-import atexit
+import os
 
 settings = {
     "global": {
-        "log_level": "info",
-        "log_file": "hdtn.log"
     },
     "send": {
         "enabled": False,
-        "send_dir": "sending"
     },
     "receive": {
         "enabled": True,
-        "target_dir": "received"
+        "receive_dir": "received"
     },
 }
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 hdtn = HDTN(settings, hdtn_root="../HDTN")
-atexit.register(hdtn.stop)
 
+# Check if receive folder exists and create it if not
+if not os.path.exists(settings['receive']['receive_dir']):
+    print("Creating receive directory")
+    os.makedirs(settings['receive']['receive_dir'])
+
+# Start hdtn and poll subprocesses
 hdtn.start()
-
 while True:
-    time.sleep(1)
     print("Status:", hdtn.poll_subprocesses())
-
-# time.sleep(10)
-# atexit.unregister(hdtn.stop)
-# hdtn.stop()
+    time.sleep(2)

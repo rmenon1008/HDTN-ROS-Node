@@ -1,28 +1,30 @@
+#!/usr/bin/env python
+
 import os
 import shutil
 import json
 import subprocess
 import logging
 import signal
+import atexit
 
 """
 Current plan:
-
 Create a utility that can send files using HDTN. It should:
 
-- Be configurable between tx, rx
+X Be configurable between tx, rx
 
 Sending:
- - Given the path to an item, provide it to BPSendFile
- - Configure HDTN to send the file
-    - Generate a config file that enables routing, scheduling
-    - Update the contact plan when a refresh is needed
- - Know the current sending status of items
+ X Given the path to an item, provide it to BPSendFile
+ X Configure HDTN to send the file
+    X Generate a config file that enables routing, scheduling
+    O Update the contact plan when a refresh is needed
+ O Know the current sending status of items
 
 Receiving:
-    - When receiving is enabled, allow HDTN to receive items and
-      store them in the provided directory
-    - Provide a callback for when an item is received or on an error
+ X When receiving is enabled, allow HDTN to receive items and
+    store them in the provided directory
+ O Provide a callback for when an item is received or on an error
 """
 
 
@@ -44,14 +46,18 @@ class HDTN:
 
         # Subprocesses
         self.hdtn_sp = None
+        self.scheduler_sp = None
         self.bp_send_sp = None
         self.bp_recv_sp = None
 
     def _find_build_root(self, hdtn_root=None):
         if not os.path.exists(hdtn_root):
-            logging.error("HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT is set or /HDTN is in the current directory.")
+            logging.error(
+                "HDTN source root does not exist. Ensure the provided root"
+                "is correct or $HDTN_SOURCE_ROOT is set.")
             raise Exception(
-                "HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT is set or /HDTN is in the current directory.")
+                "HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT"
+                " is set or /HDTN is in the current directory.")
         if not os.path.exists(os.path.join(hdtn_root, "build")):
             raise Exception("HDTN has not been built.")
 
@@ -79,7 +85,8 @@ class HDTN:
     def _set_config_files(self, configs):
         """
         Saves config files for the HDTN instances to the config directory
-        :param config: An object containing configs for one or more subprocesses (HDTN One, BPSendFile, BPRecvFile)
+        :param config: An object containing configs for one or more subprocesses
+                       (HDTN One, BPSendFile, BPRecvFile)
         """
         if configs is None:
             raise Exception("No configs provided")
@@ -131,27 +138,42 @@ class HDTN:
         logging.info("Generating start parameters...")
 
         def hdtn_one_start_params():
-            # TODO
             config_arg = '--hdtn-config-file={}'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
             return [config_arg]
 
+        def scheduler_start_params():
+            config_arg = '--hdtn-config-file={}'.format(
+                os.path.join(self.config_dir, "hdtn_one_config.json"))
+            return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
+
         def bp_send_start_params():
-            # TODO
             config_arg = '--outducts-config-file={}'.format(
                 os.path.join(self.config_dir, "bp_send_config.json"))
-            send_dir_arg = "--file-or-folder-path={}".format(
-                os.path.join(self.hdtn_root, self.settings["send"]["send_dir"]))
-            return ["--use-bp-version-7", "--max-bundle-size-bytes=4000000", send_dir_arg, "--my-uri-eid=ipn:1.1", "--dest-uri-eid=ipn:2.1", config_arg]
+
+            abs_path = os.path.abspath(self.settings["send"]["send_dir"])
+            logging.info("Sending data from {}".format(abs_path))
+             
+            send_dir_arg = '--file-or-folder-path=\"{}\"'.format(abs_path)
+            return ["--use-bp-version-7",
+                    "--max-bundle-size-bytes=4000000",
+                    send_dir_arg, "--my-uri-eid=ipn:1.1",
+                    "--dest-uri-eid=ipn:2.1",
+                    config_arg]
 
         def bp_recv_start_params():
-            # TODO
             config_arg = '--inducts-config-file={}'.format(
                 os.path.join(self.config_dir, "bp_recv_config.json"))
-            return ["--save-directory=received", "--my-uri-eid=ipn:2.1", config_arg]
+            abs_path = os.path.abspath(self.settings["receive"]["receive_dir"])
+            print("Receiving data to", abs_path)
+            recv_dir_arg = '--save-directory=\"{}\"'.format(abs_path)
+            return [recv_dir_arg, 
+                    "--my-uri-eid=ipn:2.1",
+                    config_arg]
 
         params = {
             "hdtn_one": hdtn_one_start_params(),
+            "scheduler": scheduler_start_params(),
         }
         if self.settings["send"]["enabled"]:
             params["bp_send"] = bp_send_start_params()
@@ -162,14 +184,26 @@ class HDTN:
     def _start_subprocesses(self, start_params):
         logging.info("Starting subprocesses...")
 
-        self.hdtn_sp = subprocess.Popen(
-            [self.build_root + "/module/hdtn_one_process/hdtn-one-process", *start_params["hdtn_one"]])
+        self.hdtn_sp = subprocess.Popen([
+            self.build_root + "/module/hdtn_one_process/hdtn-one-process",
+            *start_params["hdtn_one"]
+        ])
+
+        self.scheduler = subprocess.Popen([
+            self.build_root + "/module/scheduler/hdtn-scheduler",
+            *start_params["scheduler"]
+        ])
+
         if self.settings["send"]["enabled"]:
-            self.bp_send_sp = subprocess.Popen(
-                [self.build_root + "/common/bpcodec/apps/bpsendfile", *start_params["bp_send"]])
+            self.bp_send_sp = subprocess.Popen([
+                self.build_root + "/common/bpcodec/apps/bpsendfile",
+                *start_params["bp_send"]
+            ])
         if self.settings["receive"]["enabled"]:
-            self.bp_recv_sp = subprocess.Popen(
-                [self.build_root + "/common/bpcodec/apps/bpreceivefile", *start_params["bp_recv"]])
+            self.bp_recv_sp = subprocess.Popen([
+                self.build_root + "/common/bpcodec/apps/bpreceivefile",
+                *start_params["bp_recv"]
+            ])
 
     def _kill_subprocesses(self):
         logging.info("Killing subprocesses...")
@@ -201,7 +235,11 @@ class HDTN:
         # Start the HDTN subprocesses
         self._start_subprocesses(start_params)
 
+        # Set up exit handler
+        atexit.register(self.stop)
+
         # Set up callbacks for sending and receiving items
+        # TODO
         pass
 
     def poll_subprocesses(self):
@@ -210,14 +248,16 @@ class HDTN:
             "hdtn_one": None,
             "bp_send": None,
             "bp_recv": None,
+            "scheduler": None,
         }
+
 
         if self.hdtn_sp is not None:
             stat["hdtn_one"] = self.hdtn_sp.poll()
-
+        if self.scheduler_sp is not None:
+            stat["scheduler"] = self.scheduler_sp.poll()
         if self.bp_send_sp is not None:
             stat["bp_send"] = self.bp_send_sp.poll()
-
         if self.bp_recv_sp is not None:
             stat["bp_recv"] = self.bp_recv_sp.poll()
 
@@ -227,5 +267,6 @@ class HDTN:
         # Stop the HDTN instance
         logging.info("Stopping HDTN instance...")
         self._stop_subprocess(self.hdtn_sp)
+        self._stop_subprocess(self.scheduler_sp)
         self._stop_subprocess(self.bp_send_sp)
         self._stop_subprocess(self.bp_recv_sp)

@@ -1,34 +1,25 @@
 from src.hdtn import HDTN
 import time
 import logging
-import atexit
 
 settings = {
     "global": {
-        "log_level": "info",
-        "log_file": "hdtn.log"
     },
     "send": {
         "enabled": True,
-        "send_dir": "sending"
+        "send_dir": "send"
     },
     "receive": {
         "enabled": False,
-        "target_dir": "received"
     },
 }
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 hdtn = HDTN(settings, hdtn_root="../HDTN")
-atexit.register(hdtn.stop)
 
+# Start hdtn and poll subprocesses
 hdtn.start()
-
 while True:
-    time.sleep(1)
     print("Status:", hdtn.poll_subprocesses())
-
-# time.sleep(10)
-# atexit.unregister(hdtn.stop)
-# hdtn.stop()
+    time.sleep(2)
