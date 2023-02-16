@@ -116,7 +116,6 @@ class HDTN:
                 json.dump(configs["bp_send"], f)
 
         if "bp_recv" in configs:
-            print(self.config_dir + "bp_recv_config.json")
             with open(self.config_dir + "bp_recv_config.json", "w") as f:
                 json.dump(configs["bp_recv"], f)
 
@@ -186,7 +185,7 @@ class HDTN:
             config_arg = '--inducts-config-file={}'.format(
                 os.path.join(self.config_dir, "bp_recv_config.json"))
             abs_path = os.path.abspath(self.settings["receive"]["receive_dir"])
-            print("Receiving data to", abs_path)
+            logging.info("Receiving data to {}".format(abs_path))
             recv_dir_arg = '--save-directory=\"{}\"'.format(abs_path)
             return [recv_dir_arg,
                     "--my-uri-eid={}".format(self.settings["global"]["eid"]),
@@ -305,11 +304,8 @@ class HDTN:
             if sent_match:
                 self.stats["send"]["current_status"] = "idle"
 
-            print(line)
-
     def _update_stats(self):
         # Parse the stdout of the subprocesses and update the stats dict
-        print("Updating stats...")
         if self.bp_send_sp is not None:
             self._parse_stdout(self.bp_send_sp)
         if self.bp_recv_sp is not None:
