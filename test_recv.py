@@ -5,6 +5,7 @@ import os
 
 settings = {
     "global": {
+        "eid": "ipn:2.1",
     },
     "send": {
         "enabled": False,
@@ -27,5 +28,5 @@ if not os.path.exists(settings['receive']['receive_dir']):
 # Start hdtn and poll subprocesses
 hdtn.start()
 while True:
-    print("Status:", hdtn.poll_subprocesses())
+    print("Status:", hdtn.get_stats())
     time.sleep(2)

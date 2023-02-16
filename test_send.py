@@ -4,9 +4,12 @@ import logging
 
 settings = {
     "global": {
+        "eid": "ipn:1.1",
+        "logging": True
     },
     "send": {
         "enabled": True,
+        "dest_eid": "ipn:2.1",
         "send_dir": "send"
     },
     "receive": {
@@ -16,10 +19,14 @@ settings = {
 
 logging.basicConfig(level=logging.DEBUG)
 
+# Setting up an HDTN instance
 hdtn = HDTN(settings, hdtn_root="../HDTN")
 
-# Start hdtn and poll subprocesses
+# Start hdtn
 hdtn.start()
+
+# Monitor the status
 while True:
-    print("Status:", hdtn.poll_subprocesses())
+    print("Status:", hdtn.get_stats())
     time.sleep(2)
+    
