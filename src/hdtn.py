@@ -134,7 +134,10 @@ class HDTN:
         logging.info("Generating config files...")
 
         def hdtn_one_config():
-            return self._get_template_config("hdtn_one")
+            config = self._get_template_config("hdtn_one")
+            if self.settings["send"]["enabled"]:
+                config["outductsConfig"]["outductVector"][0]["remoteHostname"] = self.settings["send"]["dest_host"]
+            return config
 
         def bp_send_config():
             return self._get_template_config("bp_send")
@@ -282,23 +285,23 @@ class HDTN:
             if not line:
                 break
 
-            receiving_match = re.search(r'(?<=\[ bpreceivefile\]\[ info\]: creating new file ")(.*)(?=")', line)
+            receiving_match = re.search(r'(?<=\[ bpreceivefile\]\[ info \]: creating new file )(.*)$', line)
             if receiving_match:
-                self.stats["recv"]["current_status"] = "receiving"
-                self.stats["recv"]["current_item"] = os.path.relpath(receiving_match.group(0), self.settings["receive"]["receive_dir"])
-                self.stats["recv"]["total_number"] += 1
+                self.stats["receive"]["current_status"] = "receiving"
+                self.stats["receive"]["current_item"] = os.path.relpath(receiving_match.group(0), self.settings["receive"]["receive_dir"])
+                self.stats["receive"]["total_number"] += 1
 
-            received_match = re.search(r'(?<=\[ bpreceivefile\]\[ info\]: closed ")(.*)(?=")', line)
+            received_match = re.search(r'(?<=\[ bpreceivefile\]\[ info \]: closed )(.*)$', line)
             if received_match:
-                self.stats["recv"]["current_status"] = "idle"
+                self.stats["receive"]["current_status"] = "idle"
 
-            sending_match = re.search(r'(?<=\[ bpsendfile\]\[ info\]: send ")(.*)(?=")', line)
+            sending_match = re.search(r'(?<=\[ bpsendfile\]\[ info \]: Sending: )(.*)$', line)
             if sending_match:
                 self.stats["send"]["current_status"] = "sending"
                 self.stats["send"]["current_item"] = sending_match.group(0)
                 self.stats["send"]["total_number"] += 1
             
-            sent_match = re.search(r'\[ bpsendfile\]\[ info\]: all bundles generated and fully sent', line)
+            sent_match = re.search(r'\[ bpsendfile\]\[ info \]: waiting for new bundles to become available', line)
             if sent_match:
                 self.stats["send"]["current_status"] = "idle"
 

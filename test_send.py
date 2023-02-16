@@ -9,6 +9,7 @@ settings = {
     },
     "send": {
         "enabled": True,
+        "dest_host": "localhost",
         "dest_eid": "ipn:2.1",
         "send_dir": "send"
     },
