@@ -1,32 +1,20 @@
-from src.hdtn import HDTN
+from src.hdtn_new import HDTN_Receiver
 import time
 import logging
-import os
 
 settings = {
-    "global": {
-        "eid": "ipn:2.1",
-    },
-    "send": {
-        "enabled": False,
-    },
-    "receive": {
-        "enabled": True,
-        "receive_dir": "received"
-    },
+    "eid": "ipn:2.1",
+    "recv_dir": "received"
 }
 
 logging.basicConfig(level=logging.DEBUG)
 
-hdtn = HDTN(settings, hdtn_root="../HDTN")
+# Setting up an HDTN instance
+hdtn = HDTN_Receiver(settings, hdtn_root="../HDTN")
 
-# Check if receive folder exists and create it if not
-if not os.path.exists(settings['receive']['receive_dir']):
-    print("Creating receive directory")
-    os.makedirs(settings['receive']['receive_dir'])
-
-# Start hdtn and poll subprocesses
+# Start hdtn
 hdtn.start()
+
+# Monitor the status
 while True:
-    print("Status:", hdtn.get_stats())
     time.sleep(2)

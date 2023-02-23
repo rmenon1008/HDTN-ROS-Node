@@ -1,33 +1,29 @@
-from src.hdtn import HDTN
+from src.hdtn_new import HDTN_Sender
 import time
 import logging
 
 settings = {
-    "global": {
-        "eid": "ipn:1.1",
-        "logging": True
-    },
-    "send": {
-        "enabled": True,
-        "dest_host": "localhost",
-        "dest_eid": "ipn:2.1",
-        "send_dir": "send"
-    },
-    "receive": {
-        "enabled": False,
-    },
+    "eid": "ipn:1.1",
+    "dest_host": "localhost",
+    "dest_eid": "ipn:2.1",
+    "send_dir": "send"
 }
 
 logging.basicConfig(level=logging.DEBUG)
 
 # Setting up an HDTN instance
-hdtn = HDTN(settings, hdtn_root="../HDTN")
+hdtn = HDTN_Sender(settings, hdtn_root="../HDTN")
 
 # Start hdtn
 hdtn.start()
 
-# Monitor the status
+time.sleep(2)
+
+hdtn.send_item("TEST_DIR")
+
+time.sleep(20)
+
+hdtn.send_item("h_index.py")
+
 while True:
-    print("Status:", hdtn.get_stats())
     time.sleep(2)
-    

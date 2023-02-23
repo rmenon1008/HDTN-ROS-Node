@@ -3,11 +3,15 @@
 import os
 import shutil
 import json
-import re
 import subprocess
 import logging
 import signal
 import atexit
+import string
+import random
+
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 """
 Important: Only works on Unix systems
@@ -30,11 +34,16 @@ Receiving:
  O Provide a callback for when an item is received or on an error
 """
 
+process_locations = {
+    "hdtn_one": "/module/hdtn_one_process/hdtn-one-process",
+    "scheduler": "/module/scheduler/hdtn-scheduler",
+    "bp_send": "/common/bpcodec/apps/bpsendfile",
+    "bp_recv": "/common/bpcodec/apps/bpreceivefile"
+}
 
-class HDTN:
-    def __init__(self, settings, hdtn_root=None):
-        # Ensure the HDTN is available and built
-        # Set up a folder for configuration files
+
+class HDTN_Base:
+    def _setup_common(self, hdtn_root=None):
         if hdtn_root is None:
             hdtn_root = os.environ.get(
                 'HDTN_SOURCE_ROOT', os.getcwd() + "/HDTN")
@@ -43,29 +52,6 @@ class HDTN:
 
         self.build_root = self._find_build_root(hdtn_root)
         self.config_dir = self._create_config_dir()
-
-        # Class parameters
-        self.settings = settings
-
-        # Subprocesses
-        self.hdtn_sp = None
-        self.scheduler_sp = None
-        self.bp_send_sp = None
-        self.bp_recv_sp = None
-
-        # Status
-        self.stats = {
-            "send": {
-                "current_status": "idle",
-                "current_item": "",
-                "total_number": 0,
-            },
-            "receive": {
-                "current_status": "idle",
-                "current_item": "",
-                "total_number": 0,
-            }
-        }
 
     def _find_build_root(self, hdtn_root=None):
         if not os.path.exists(hdtn_root):
@@ -81,43 +67,10 @@ class HDTN:
         return hdtn_root + "/build"
 
     def _create_config_dir(self):
-        dir = os.path.join(self.build_root, "config_hdtnpy/")
+        dir = os.path.join(os.getcwd(), "config_hdtnpy/")
         if not os.path.exists(dir):
             os.makedirs(dir)
-
         return dir
-
-    def _set_contact_plan(self, contact_plan):
-        """
-        Saves the contact plan for the HDTN instance to the config directory
-        :param contact_plan: A dictionary that follows the HDTN contact plan format
-        """
-        if contact_plan is None:
-            logging.error("Contact plan does not exist")
-            raise Exception("Contact plan does not exist")
-        with open(self.config_dir + "contact_plan.json", "w") as f:
-            json.dump(contact_plan, f)
-
-    def _set_config_files(self, configs):
-        """
-        Saves config files for the HDTN instances to the config directory
-        :param configs: An object containing configs for one or more subprocesses
-                       (HDTN One, BPSendFile, BPRecvFile)
-        """
-        if configs is None:
-            raise Exception("No configs provided")
-
-        if "hdtn_one" in configs:
-            with open(self.config_dir + "hdtn_one_config.json", "w") as f:
-                json.dump(configs["hdtn_one"], f)
-
-        if "bp_send" in configs:
-            with open(self.config_dir + "bp_send_config.json", "w") as f:
-                json.dump(configs["bp_send"], f)
-
-        if "bp_recv" in configs:
-            with open(self.config_dir + "bp_recv_config.json", "w") as f:
-                json.dump(configs["bp_recv"], f)
 
     def _get_template_config(self, type):
         # Get the template config from ./config_templates
@@ -129,29 +82,122 @@ class HDTN:
 
         return data
 
+    def _start_subprocesses(self):
+        logging.info("Starting subprocesses...")
+
+        self._gen_configs()
+        self._gen_start_params()
+
+        for key in self.subprocesses:
+            start_params = self.subprocesses[key]["start_params"]
+            config = self.subprocesses[key]["config"]
+            if start_params is None:
+                logging.warning(
+                    "No start params provided for " + key + ", skipping...")
+                continue
+
+            if config is not None:
+                with open(self.config_dir + key + "_config.json", "w") as f:
+                    json.dump(config, f)
+            else:
+                logging.info("No config provided for " + key)
+
+            self.subprocesses[key]["process"] = subprocess.Popen(
+                [
+                    self.build_root + process_locations[key],
+                    *start_params
+                ],
+                # stdout=subprocess.PIPE,
+                # stderr=subprocess.PIPE,
+                bufsize=1,
+                universal_newlines=True,
+                preexec_fn=os.setsid
+            )
+
+    def _kill_subprocesses(self):
+        logging.info("Killing subprocesses...")
+        for key in self.subprocesses:
+            sp = self.subprocesses[key]["process"]
+            if sp is not None:
+                sp.kill()
+
+    def _stop_subprocess(self, sp):
+        try:
+            if sp is not None:
+                logging.info("Stopping subprocess " + str(sp))
+                sp.send_signal(signal.SIGINT)
+                sp.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logging.warning("Subprocess " + str(sp) + " did not stop cleanly")
+            sp.kill()
+
+    def start(self):
+        logging.info("Starting HDTN instance...")
+
+        # Start the HDTN subprocesses
+        self._start_subprocesses()
+
+        # Set up exit handler
+        atexit.register(self.stop)
+
+    def stop(self):
+        # Stop the HDTN instance
+        logging.info("Stopping HDTN instance...")
+
+        # Stop the subprocesses
+        for key in self.subprocesses:
+            self._stop_subprocess(self.subprocesses[key]["process"])
+
+
+class HDTN_Sender(HDTN_Base):
+    def __init__(self, settings, hdtn_root=None):
+        self.settings = settings
+        self._setup_common(hdtn_root)
+
+        # Subprocesses
+        self.subprocesses = {
+            "hdtn_one": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            },
+            "scheduler": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            },
+            "bp_send": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            }
+        }
+
+        # Create the send directory if it doesn't exist
+        if not os.path.exists(self.settings["send_dir"]):
+            os.makedirs(self.settings["send_dir"])
+
+        # Status
+        self.stats = {
+            "current_status": "idle",
+            "current_item": "",
+            "total_number": 0,
+            "queue": []
+        }
+
     def _gen_configs(self):
         logging.info("Generating config files...")
 
         def hdtn_one_config():
             config = self._get_template_config("hdtn_one")
-            if self.settings["send"]["enabled"]:
-                config["outductsConfig"]["outductVector"][0]["remoteHostname"] = self.settings["send"]["dest_host"]
+            config["outductsConfig"]["outductVector"][0]["remoteHostname"] = self.settings["dest_host"]
             return config
 
         def bp_send_config():
             return self._get_template_config("bp_send")
 
-        def bp_recv_config():
-            return self._get_template_config("bp_recv")
-
-        configs = {
-            "hdtn_one": hdtn_one_config(),
-        }
-        if self.settings["send"]["enabled"]:
-            configs["bp_send"] = bp_send_config()
-        if self.settings["receive"]["enabled"]:
-            configs["bp_recv"] = bp_recv_config()
-        return configs
+        self.subprocesses["hdtn_one"]["config"] = hdtn_one_config()
+        self.subprocesses["bp_send"]["config"] = bp_send_config()
 
     def _gen_start_params(self):
         logging.info("Generating start parameters...")
@@ -170,175 +216,137 @@ class HDTN:
             config_arg = '--outducts-config-file={}'.format(
                 os.path.join(self.config_dir, "bp_send_config.json"))
 
-            abs_path = os.path.abspath(self.settings["send"]["send_dir"])
+            abs_path = os.path.abspath(self.settings["send_dir"])
             logging.info("Sending data from {}".format(abs_path))
 
             send_dir_arg = '--file-or-folder-path=\"{}\"'.format(abs_path)
             return ["--use-bp-version-7",
                     "--max-bundle-size-bytes=4000000",
-                    send_dir_arg, "--my-uri-eid={}".format(self.settings["global"]["eid"]),
-                    "--dest-uri-eid={}".format(self.settings["send"]["dest_eid"]),
+                    send_dir_arg, "--my-uri-eid={}".format(
+                        self.settings["eid"]),
+                    "--dest-uri-eid={}".format(self.settings["dest_eid"]),
                     config_arg,
                     "--upload-new-files"]
+
+        self.subprocesses["hdtn_one"]["start_params"] = hdtn_one_start_params()
+        self.subprocesses["scheduler"]["start_params"] = scheduler_start_params()
+        self.subprocesses["bp_send"]["start_params"] = bp_send_start_params()
+
+    def send_item(self, item_path):
+        rand_key = ''.join(random.choices(string.ascii_letters, k=8))
+
+        # Copy the file or dir inside another directory with a random name
+        send_dir = self.settings["send_dir"]
+        send_path = os.path.join(send_dir, rand_key, os.path.basename(item_path))
+        if not os.path.exists(os.path.dirname(send_path)):
+            os.makedirs(os.path.dirname(send_path))
+        if os.path.isdir(item_path):
+            shutil.copytree(item_path, send_path)
+        else:
+            shutil.copy2(item_path, send_path)
+
+        # Add the item to the send queue
+        self.stats['queue'].append(rand_key)
+
+
+class ReceiveDirHandler(FileSystemEventHandler):
+    def on_any_event(self, event):
+        print(event.event_type, event.src_path)
+
+    def on_created(self, event):
+        print("on_created", event.src_path)
+
+    def on_deleted(self, event):
+        print("on_deleted", event.src_path)
+
+    def on_modified(self, event):
+        print("on_modified", event.src_path)
+
+    def on_moved(self, event):
+        print("on_moved", event.src_path)
+
+class HDTN_Receiver(HDTN_Base):
+    def __init__(self, settings, hdtn_root=None, recv_callback=None):
+        self.settings = settings
+        self._setup_common(hdtn_root)
+
+        # Subprocesses
+        self.subprocesses = {
+            "hdtn_one": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            },
+            "bp_recv": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            },
+            "scheduler": {
+                "process": None,
+                "config": None,
+                "start_params": None
+            }
+        }
+
+        # Create the recevive directory if it doesn't exist
+        if not os.path.exists(self.settings["recv_dir"]):
+            os.makedirs(self.settings["recv_dir"])
+
+        # Create the directory monitor
+        self.monitor = Observer()
+        self.monitor.schedule(
+            ReceiveDirHandler(),
+            self.settings["recv_dir"],
+            recursive=True
+        )
+        self.monitor.start()
+
+        # Status
+        self.stats = {
+            "current_status": "idle",
+            "current_item": "",
+            "total_number": 0,
+        }
+
+    def _gen_configs(self):
+        logging.info("Generating config files...")
+
+        def hdtn_one_config():
+            config = self._get_template_config("hdtn_one")
+            return config
+
+        def bp_recv_config():
+            return self._get_template_config("bp_recv")
+
+        self.subprocesses["hdtn_one"]["config"] = hdtn_one_config()
+        self.subprocesses["bp_recv"]["config"] = bp_recv_config()
+
+    def _gen_start_params(self):
+        logging.info("Generating start parameters...")
+
+        def hdtn_one_start_params():
+            config_arg = '--hdtn-config-file={}'.format(
+                os.path.join(self.config_dir, "hdtn_one_config.json"))
+            return [config_arg]
+
+        def scheduler_start_params():
+            config_arg = '--hdtn-config-file={}'.format(
+                os.path.join(self.config_dir, "hdtn_one_config.json"))
+            return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
 
         def bp_recv_start_params():
             config_arg = '--inducts-config-file={}'.format(
                 os.path.join(self.config_dir, "bp_recv_config.json"))
-            abs_path = os.path.abspath(self.settings["receive"]["receive_dir"])
+            abs_path = os.path.abspath(self.settings["recv_dir"])
+
             logging.info("Receiving data to {}".format(abs_path))
+
             recv_dir_arg = '--save-directory=\"{}\"'.format(abs_path)
             return [recv_dir_arg,
-                    "--my-uri-eid={}".format(self.settings["global"]["eid"]),
+                    "--my-uri-eid={}".format(self.settings["eid"]),
                     config_arg]
 
-        params = {
-            "hdtn_one": hdtn_one_start_params(),
-            "scheduler": scheduler_start_params(),
-        }
-        if self.settings["send"]["enabled"]:
-            params["bp_send"] = bp_send_start_params()
-        if self.settings["receive"]["enabled"]:
-            params["bp_recv"] = bp_recv_start_params()
-        return params
-
-    def _start_subprocesses(self, start_params):
-        logging.info("Starting subprocesses...")
-
-        self.hdtn_sp = subprocess.Popen(
-            [
-                self.build_root + "/module/hdtn_one_process/hdtn-one-process",
-                *start_params["hdtn_one"],
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            universal_newlines=True,
-            preexec_fn=os.setsid
-        )
-
-        self.scheduler = subprocess.Popen(
-            [
-                self.build_root + "/module/scheduler/hdtn-scheduler",
-                *start_params["scheduler"]
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            universal_newlines=True,
-            preexec_fn=os.setsid
-        )
-
-        if self.settings["send"]["enabled"]:
-            self.bp_send_sp = subprocess.Popen(
-                [
-                    self.build_root + "/common/bpcodec/apps/bpsendfile",
-                    *start_params["bp_send"]
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1,
-                universal_newlines=True,
-                preexec_fn=os.setsid
-            )
-        if self.settings["receive"]["enabled"]:
-            self.bp_recv_sp = subprocess.Popen(
-                [
-                    self.build_root + "/common/bpcodec/apps/bpreceivefile",
-                    *start_params["bp_recv"]
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1,
-                universal_newlines=True,
-                preexec_fn=os.setsid,
-            )
-
-    def _kill_subprocesses(self):
-        logging.info("Killing subprocesses...")
-
-        if self.hdtn_sp is not None:
-            self.hdtn_sp.kill()
-        if self.scheduler is not None:
-            self.scheduler.kill()
-        if self.bp_send_sp is not None:
-            self.bp_send_sp.kill()
-        if self.bp_recv_sp is not None:
-            self.bp_recv_sp.kill()
-
-    def _stop_subprocess(self, sp):
-        try:
-            if sp is not None:
-                logging.info("Stopping subprocess " + str(sp))
-                sp.send_signal(signal.SIGINT)
-                sp.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logging.warning("Subprocess " + str(sp) + " did not stop cleanly")
-            sp.kill()
-
-    def _parse_stdout(self, process):
-        # Parse the stdout of a subprocess and update the stats dict
-        # Make sure the stdout is non-blocking (will not work on non-Unix)
-        os.set_blocking(process.stdout.fileno(), False)
-        while True :
-            line = process.stdout.readline().strip()
-            if not line:
-                break
-
-            receiving_match = re.search(r'(?<=\[ bpreceivefile\]\[ info \]: creating new file )(.*)$', line)
-            if receiving_match:
-                self.stats["receive"]["current_status"] = "receiving"
-                self.stats["receive"]["current_item"] = os.path.relpath(receiving_match.group(0), self.settings["receive"]["receive_dir"])
-                self.stats["receive"]["total_number"] += 1
-
-            received_match = re.search(r'(?<=\[ bpreceivefile\]\[ info \]: closed )(.*)$', line)
-            if received_match:
-                self.stats["receive"]["current_status"] = "idle"
-
-            sending_match = re.search(r'(?<=\[ bpsendfile\]\[ info \]: Sending: )(.*)$', line)
-            if sending_match:
-                self.stats["send"]["current_status"] = "sending"
-                self.stats["send"]["current_item"] = sending_match.group(0)
-                self.stats["send"]["total_number"] += 1
-            
-            sent_match = re.search(r'\[ bpsendfile\]\[ info \]: waiting for new bundles to become available', line)
-            if sent_match:
-                self.stats["send"]["current_status"] = "idle"
-
-    def _update_stats(self):
-        # Parse the stdout of the subprocesses and update the stats dict
-        if self.bp_send_sp is not None:
-            self._parse_stdout(self.bp_send_sp)
-        if self.bp_recv_sp is not None:
-            self._parse_stdout(self.bp_recv_sp)
-        pass
-        
-
-    def start(self):
-        logging.info("Starting HDTN instance...")
-        # Generate the config files
-        configs = self._gen_configs()
-        self._set_config_files(configs)
-        start_params = self._gen_start_params()
-
-        # Start the HDTN subprocesses
-        self._start_subprocesses(start_params)
-
-        # Set up exit handler
-        atexit.register(self.stop)
-
-        # Set up callbacks for sending and receiving items
-        # TODO
-        pass
-
-    def get_stats(self):
-        # Get the stats from the HDTN instance
-        self._update_stats()
-        return self.stats
-
-    def stop(self):
-        # Stop the HDTN instance
-        logging.info("Stopping HDTN instance...")
-        self._stop_subprocess(self.hdtn_sp)
-        self._stop_subprocess(self.scheduler_sp)
-        self._stop_subprocess(self.bp_send_sp)
-        self._stop_subprocess(self.bp_recv_sp)
+        self.subprocesses["hdtn_one"]["start_params"] = hdtn_one_start_params()
+        self.subprocesses["scheduler"]["start_params"] = scheduler_start_params()
+        self.subprocesses["bp_recv"]["start_params"] = bp_recv_start_params()
