@@ -9,6 +9,7 @@ import signal
 import atexit
 import string
 import random
+import tarfile
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -67,7 +68,7 @@ class HDTN_Base:
         return hdtn_root + "/build"
 
     def _create_config_dir(self):
-        dir = os.path.join(os.getcwd(), "config_hdtnpy/")
+        dir = os.path.join(os.getcwd(), "hdtnpy_runtime/")
         if not os.path.exists(dir):
             os.makedirs(dir)
         return dir
@@ -100,15 +101,15 @@ class HDTN_Base:
                 with open(self.config_dir + key + "_config.json", "w") as f:
                     json.dump(config, f)
             else:
-                logging.info("No config provided for " + key)
+                logging.debug("No config provided for " + key)
 
             self.subprocesses[key]["process"] = subprocess.Popen(
                 [
                     self.build_root + process_locations[key],
                     *start_params
                 ],
-                # stdout=subprocess.PIPE,
-                # stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 bufsize=1,
                 universal_newlines=True,
                 preexec_fn=os.setsid
@@ -153,6 +154,7 @@ class HDTN_Sender(HDTN_Base):
     def __init__(self, settings, hdtn_root=None):
         self.settings = settings
         self._setup_common(hdtn_root)
+        self.send_dir = os.path.join(self.config_dir, "send_tar/")
 
         # Subprocesses
         self.subprocesses = {
@@ -174,16 +176,11 @@ class HDTN_Sender(HDTN_Base):
         }
 
         # Create the send directory if it doesn't exist
-        if not os.path.exists(self.settings["send_dir"]):
-            os.makedirs(self.settings["send_dir"])
+        if not os.path.exists(self.send_dir):
+            os.makedirs(self.send_dir)
 
         # Status
-        self.stats = {
-            "current_status": "idle",
-            "current_item": "",
-            "total_number": 0,
-            "queue": []
-        }
+        self.sent_items = []
 
     def _gen_configs(self):
         logging.info("Generating config files...")
@@ -203,21 +200,21 @@ class HDTN_Sender(HDTN_Base):
         logging.info("Generating start parameters...")
 
         def hdtn_one_start_params():
-            config_arg = '--hdtn-config-file={}'.format(
+            config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
             return [config_arg]
 
         def scheduler_start_params():
-            config_arg = '--hdtn-config-file={}'.format(
+            config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
             return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
 
         def bp_send_start_params():
-            config_arg = '--outducts-config-file={}'.format(
+            config_arg = '--outducts-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "bp_send_config.json"))
 
-            abs_path = os.path.abspath(self.settings["send_dir"])
-            logging.info("Sending data from {}".format(abs_path))
+            abs_path = os.path.abspath(self.send_dir)
+            logging.info('Sending data from \"{}\"'.format(abs_path))
 
             send_dir_arg = '--file-or-folder-path=\"{}\"'.format(abs_path)
             return ["--use-bp-version-7",
@@ -233,42 +230,33 @@ class HDTN_Sender(HDTN_Base):
         self.subprocesses["bp_send"]["start_params"] = bp_send_start_params()
 
     def send_item(self, item_path):
-        rand_key = ''.join(random.choices(string.ascii_letters, k=8))
-
-        # Copy the file or dir inside another directory with a random name
-        send_dir = self.settings["send_dir"]
-        send_path = os.path.join(send_dir, rand_key, os.path.basename(item_path))
-        if not os.path.exists(os.path.dirname(send_path)):
-            os.makedirs(os.path.dirname(send_path))
-        if os.path.isdir(item_path):
-            shutil.copytree(item_path, send_path)
+        if not os.path.exists(item_path):
+            logging.error("Item does not exist: " + item_path)
+            return
+        
+        # Check if its a tar file already
+        if item_path.endswith(".tar"):
+            key = os.path.basename(item_path).replace(".tar", "")
+            shutil.copy2(item_path, self.send_dir)
         else:
-            shutil.copy2(item_path, send_path)
+            # Generate a random key
+            key = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+            # Tar the file or directory
+            tar_path = os.path.join(self.send_dir, key + ".tar")
+            with tarfile.open(tar_path, "w") as tar:
+                tar.add(item_path, arcname=os.path.basename(item_path))
 
         # Add the item to the send queue
-        self.stats['queue'].append(rand_key)
+        self.sent_items.append(key)
 
-
-class ReceiveDirHandler(FileSystemEventHandler):
-    def on_any_event(self, event):
-        print(event.event_type, event.src_path)
-
-    def on_created(self, event):
-        print("on_created", event.src_path)
-
-    def on_deleted(self, event):
-        print("on_deleted", event.src_path)
-
-    def on_modified(self, event):
-        print("on_modified", event.src_path)
-
-    def on_moved(self, event):
-        print("on_moved", event.src_path)
+        return key
 
 class HDTN_Receiver(HDTN_Base):
     def __init__(self, settings, hdtn_root=None, recv_callback=None):
         self.settings = settings
+        self._user_recv_callback = recv_callback
         self._setup_common(hdtn_root)
+        self.recv_dir = os.path.join(self.config_dir, "recv_tar/")
 
         # Subprocesses
         self.subprocesses = {
@@ -290,24 +278,47 @@ class HDTN_Receiver(HDTN_Base):
         }
 
         # Create the recevive directory if it doesn't exist
-        if not os.path.exists(self.settings["recv_dir"]):
-            os.makedirs(self.settings["recv_dir"])
+        if not os.path.exists(self.recv_dir):
+            os.makedirs(self.recv_dir)
 
         # Create the directory monitor
         self.monitor = Observer()
         self.monitor.schedule(
-            ReceiveDirHandler(),
-            self.settings["recv_dir"],
+            self.ReceiveDirHandler(self._on_recv),
+            self.recv_dir,
             recursive=True
         )
         self.monitor.start()
 
         # Status
-        self.stats = {
-            "current_status": "idle",
-            "current_item": "",
-            "total_number": 0,
-        }
+        self.received_items = []
+
+    class ReceiveDirHandler(FileSystemEventHandler):
+        def __init__(self, on_recv):
+            self.on_recv = on_recv
+
+        def on_closed(self, event):
+            try:
+                key = os.path.basename(event.src_path).split(".")[0]
+                if self.on_recv is not None:
+                    self.on_recv(key)
+            except Exception as e:
+                logging.error("Error in ReceiveDirHandler: " + str(e))
+
+    def _on_recv(self, key):
+        logging.info("Received item: " + key)
+        self.received_items.append(key)
+
+        if self._user_recv_callback is not None:
+            self._user_recv_callback(key, self.recv_dir)
+
+        if self.settings["unpack_after_recv"]:
+            # Untar the file
+            tar_path = os.path.join(self.recv_dir, key + ".tar")
+            with tarfile.open(tar_path, "r") as tar:
+                tar.extractall(self.settings["unpack_recv_dir"])
+            # Remove the tar file
+            os.remove(tar_path)
 
     def _gen_configs(self):
         logging.info("Generating config files...")
@@ -326,21 +337,21 @@ class HDTN_Receiver(HDTN_Base):
         logging.info("Generating start parameters...")
 
         def hdtn_one_start_params():
-            config_arg = '--hdtn-config-file={}'.format(
+            config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
             return [config_arg]
 
         def scheduler_start_params():
-            config_arg = '--hdtn-config-file={}'.format(
+            config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
             return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
 
         def bp_recv_start_params():
-            config_arg = '--inducts-config-file={}'.format(
+            config_arg = '--inducts-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "bp_recv_config.json"))
-            abs_path = os.path.abspath(self.settings["recv_dir"])
+            abs_path = os.path.abspath(self.recv_dir)
 
-            logging.info("Receiving data to {}".format(abs_path))
+            logging.info("Receiving data to \"{}\"".format(abs_path))
 
             recv_dir_arg = '--save-directory=\"{}\"'.format(abs_path)
             return [recv_dir_arg,

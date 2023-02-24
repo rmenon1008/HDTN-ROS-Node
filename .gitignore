@@ -21,3 +21,4 @@ var/
 *.egg
 
 /logs
+/hdtnpy_runtime
