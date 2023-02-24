@@ -44,7 +44,7 @@ class SendNode:
         :return: None
         """
         dst = req.dst_dir
-        file_utils.move_directory(self.rec, dst)
+        file_utils.copy_directory(self.rec, dst)
         file_utils.clear_dir(self.rec)
 
 

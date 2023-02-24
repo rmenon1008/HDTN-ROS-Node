@@ -51,7 +51,7 @@ class SendNode:
         :return: None
         """
         file_utils.clear_dir(self.send_dir)
-        file_utils.move_directory(req.src_dir, self.send_dir)
+        file_utils.copy_directory(req.src_dir, self.send_dir)
 
     def hdtn_status(self):
         """
