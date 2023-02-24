@@ -122,7 +122,7 @@ class HDTN:
     def _get_template_config(self, type):
         # Get the template config from ./config_templates
         path = os.path.join(os.path.dirname(__file__),
-                            "config_templates", type + ".json")
+                            "../config_templates", type + ".json")
 
         with open(path, 'r') as f:
             data = json.load(f)

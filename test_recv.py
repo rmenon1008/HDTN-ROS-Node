@@ -1,4 +1,4 @@
-from src.hdtn import HDTN
+from src.scripts.hdtn import HDTN
 import time
 import logging
 import os
@@ -28,5 +28,5 @@ if not os.path.exists(settings['receive']['receive_dir']):
 # Start hdtn and poll subprocesses
 hdtn.start()
 while True:
-    print("Status:", hdtn.get_stats())
+    print("Status:", )
     time.sleep(2)

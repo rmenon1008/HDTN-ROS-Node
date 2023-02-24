@@ -1,0 +1,3 @@
+string status
+string current_item
+int32 total_number

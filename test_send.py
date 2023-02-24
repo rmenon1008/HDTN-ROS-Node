@@ -1,4 +1,4 @@
-from src.hdtn import HDTN
+from src.scripts.hdtn import HDTN
 import time
 import logging
 
