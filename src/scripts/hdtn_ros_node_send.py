@@ -59,7 +59,7 @@ class SendNode:
         :return: None
         """
         # start hdtn status publisher
-        self.status_pub = rospy.Publisher('hdtn_status', SendData, queue_size=10)
+        self.status_pub = rospy.Publisher('hdtn_status', status, queue_size=10)
         while not rospy.is_shutdown():
             if self.hdtn is not None:
                 mode_stats = self.hdtn.stats.get()
