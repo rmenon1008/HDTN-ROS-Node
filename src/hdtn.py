@@ -57,10 +57,10 @@ class HDTN_Base:
     def _find_build_root(self, hdtn_root=None):
         if not os.path.exists(hdtn_root):
             logging.error(
-                "HDTN source root does not exist. Ensure the provided root"
-                "is correct or $HDTN_SOURCE_ROOT is set.")
+                "HDTN source root does not exist. Ensure `hdtn_root`"
+                " is set or /HDTN is in the current directory.")
             raise Exception(
-                "HDTN source root does not exist. Ensure $HDTN_SOURCE_ROOT"
+                "HDTN source root does not exist. Ensure `hdtn_root`"
                 " is set or /HDTN is in the current directory.")
         if not os.path.exists(os.path.join(hdtn_root, "build")):
             raise Exception("HDTN has not been built.")
@@ -92,6 +92,7 @@ class HDTN_Base:
         for key in self.subprocesses:
             start_params = self.subprocesses[key]["start_params"]
             config = self.subprocesses[key]["config"]
+
             if start_params is None:
                 logging.warning(
                     "No start params provided for " + key + ", skipping...")
@@ -102,6 +103,10 @@ class HDTN_Base:
                     json.dump(config, f)
             else:
                 logging.debug("No config provided for " + key)
+
+            if "contact_plan" in self.subprocesses[key]:
+                with open(self.config_dir + "contact_plan.json", "w") as f:
+                    json.dump(self.subprocesses[key]["contact_plan"], f)
 
             self.subprocesses[key]["process"] = subprocess.Popen(
                 [
@@ -161,12 +166,8 @@ class HDTN_Sender(HDTN_Base):
             "hdtn_one": {
                 "process": None,
                 "config": None,
-                "start_params": None
-            },
-            "scheduler": {
-                "process": None,
-                "config": None,
-                "start_params": None
+                "start_params": None,
+                "contact_plan": None
             },
             "bp_send": {
                 "process": None,
@@ -176,8 +177,9 @@ class HDTN_Sender(HDTN_Base):
         }
 
         # Create the send directory if it doesn't exist
-        if not os.path.exists(self.send_dir):
-            os.makedirs(self.send_dir)
+        if os.path.exists(self.send_dir):
+            shutil.rmtree(self.send_dir)
+        os.makedirs(self.send_dir)
 
         # Status
         self.sent_items = []
@@ -189,11 +191,15 @@ class HDTN_Sender(HDTN_Base):
             config = self._get_template_config("hdtn_one")
             config["outductsConfig"]["outductVector"][0]["remoteHostname"] = self.settings["dest_host"]
             return config
+        
+        def contact_plan():
+            return self._get_template_config("contact_plan")
 
         def bp_send_config():
             return self._get_template_config("bp_send")
 
         self.subprocesses["hdtn_one"]["config"] = hdtn_one_config()
+        self.subprocesses["hdtn_one"]["contact_plan"] = contact_plan()
         self.subprocesses["bp_send"]["config"] = bp_send_config()
 
     def _gen_start_params(self):
@@ -202,12 +208,9 @@ class HDTN_Sender(HDTN_Base):
         def hdtn_one_start_params():
             config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
-            return [config_arg]
-
-        def scheduler_start_params():
-            config_arg = '--hdtn-config-file=\"{}\"'.format(
-                os.path.join(self.config_dir, "hdtn_one_config.json"))
-            return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
+            contact_plan_arg = '--contact-plan-file=\"{}\"'.format(
+                os.path.join(self.config_dir, "contact_plan.json"))
+            return [contact_plan_arg, config_arg]
 
         def bp_send_start_params():
             config_arg = '--outducts-config-file=\"{}\"'.format(
@@ -226,7 +229,6 @@ class HDTN_Sender(HDTN_Base):
                     "--upload-new-files"]
 
         self.subprocesses["hdtn_one"]["start_params"] = hdtn_one_start_params()
-        self.subprocesses["scheduler"]["start_params"] = scheduler_start_params()
         self.subprocesses["bp_send"]["start_params"] = bp_send_start_params()
 
     def send_item(self, item_path):
@@ -269,17 +271,13 @@ class HDTN_Receiver(HDTN_Base):
                 "process": None,
                 "config": None,
                 "start_params": None
-            },
-            "scheduler": {
-                "process": None,
-                "config": None,
-                "start_params": None
             }
         }
 
         # Create the recevive directory if it doesn't exist
-        if not os.path.exists(self.recv_dir):
-            os.makedirs(self.recv_dir)
+        if os.path.exists(self.recv_dir):
+            shutil.rmtree(self.recv_dir)
+        os.makedirs(self.recv_dir)
 
         # Create the directory monitor
         self.monitor = Observer()
@@ -339,13 +337,8 @@ class HDTN_Receiver(HDTN_Base):
         def hdtn_one_start_params():
             config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
-            return [config_arg]
-
-        def scheduler_start_params():
-            config_arg = '--hdtn-config-file=\"{}\"'.format(
-                os.path.join(self.config_dir, "hdtn_one_config.json"))
             return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
-
+        
         def bp_recv_start_params():
             config_arg = '--inducts-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "bp_recv_config.json"))
@@ -359,5 +352,18 @@ class HDTN_Receiver(HDTN_Base):
                     config_arg]
 
         self.subprocesses["hdtn_one"]["start_params"] = hdtn_one_start_params()
-        self.subprocesses["scheduler"]["start_params"] = scheduler_start_params()
         self.subprocesses["bp_recv"]["start_params"] = bp_recv_start_params()
+
+
+# def kill_all():
+#     logging.info("Killing all HDTN processes...")
+#     for j in ["hdtn-one-process", "hdtn-ingress", "hdtn-egress-async", "hdtn-storage", "hdtn-scheduler", "bpsink-async", "bpgen-async", "bpreceivefile", "bpsendfile", "hdtn-router", "web_interface"]:
+#         try: 
+#             for i in " ".join(subprocess.check_output(["pidof", j]).decode("utf-8").split()):
+#                 logging.warn("Killing " + j + " with PID " + i)
+#                 subprocess.call(["kill", "-9", i])
+#         except:
+#             pass
+
+    
+    
