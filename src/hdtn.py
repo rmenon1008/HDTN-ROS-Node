@@ -113,8 +113,8 @@ class HDTN_Base:
                     self.build_root + process_locations[key],
                     *start_params
                 ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                #stdout=subprocess.DEVNULL,
+                #stderr=subprocess.DEVNULL,
                 bufsize=1,
                 universal_newlines=True,
                 preexec_fn=os.setsid
@@ -337,7 +337,7 @@ class HDTN_Receiver(HDTN_Base):
         def hdtn_one_start_params():
             config_arg = '--hdtn-config-file=\"{}\"'.format(
                 os.path.join(self.config_dir, "hdtn_one_config.json"))
-            return ["--contact-plan-file=contactPlanCutThroughMode.json", config_arg]
+            return [config_arg]
         
         def bp_recv_start_params():
             config_arg = '--inducts-config-file=\"{}\"'.format(
