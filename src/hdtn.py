@@ -10,11 +10,9 @@ import atexit
 import string
 import random
 import tarfile
-import threading
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import zmq
 
 """
 Important: Only works on Unix systems
@@ -158,14 +156,10 @@ class HDTN_Base:
 
 
 class HDTN_Sender(HDTN_Base):
-    def __init__(self, settings, hdtn_root=None, send_callback=None):
+    def __init__(self, settings, hdtn_root=None):
         self.settings = settings
-        self._user_send_callback = send_callback
-
         self._setup_common(hdtn_root)
         self.send_dir = os.path.join(self.config_dir, "send_tar/")
-
-        self._start_ack_server_thread()
 
         # Subprocesses
         self.subprocesses = {
@@ -189,31 +183,6 @@ class HDTN_Sender(HDTN_Base):
 
         # Status
         self.sent_items = []
-        self.waiting_items = []
-
-    def _start_ack_server_thread(self):
-        self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.PAIR)
-        self.zmq_socket.bind("tcp://*:4560")
-
-        self.message_thread = None
-        self.message_thread = threading.Thread(target=self._process_acks, daemon=True)
-        self.message_thread.start()
-
-    def _process_acks(self):
-        while True:
-            # Wait for a message to be sent
-            message = self.zmq_socket.recv_string()
-            logging.debug("Received message: " + message)
-
-            if message in self.waiting_items:
-                self.waiting_items.remove(message)
-                self.sent_items.append(message)
-
-                if self._user_send_callback is not None:
-                    self._user_send_callback(message)
-            else:
-                logging.warning("Received ack for unknown item: " + message)
 
     def _gen_configs(self):
         logging.info("Generating config files...")
@@ -280,7 +249,7 @@ class HDTN_Sender(HDTN_Base):
                 tar.add(item_path, arcname=os.path.basename(item_path))
 
         # Add the item to the send queue
-        self.waiting_items.append(key)
+        self.sent_items.append(key)
 
         return key
 
@@ -322,15 +291,6 @@ class HDTN_Receiver(HDTN_Base):
         # Status
         self.received_items = []
 
-    
-    def _setup_ack_client(self):
-        self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.PAIR)
-        self.zmq_socket.bind("tcp://*:4560")
-
-    def _create_ack(self, key):
-        self.zmq_socket.send_string(key)
-
     class ReceiveDirHandler(FileSystemEventHandler):
         def __init__(self, on_recv):
             self.on_recv = on_recv
@@ -346,8 +306,6 @@ class HDTN_Receiver(HDTN_Base):
     def _on_recv(self, key):
         logging.info("Received item: " + key)
         self.received_items.append(key)
-
-        self._create_ack(key)
 
         if self._user_recv_callback is not None:
             self._user_recv_callback(key, self.recv_dir)

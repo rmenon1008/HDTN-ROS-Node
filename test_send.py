@@ -2,30 +2,28 @@ from src.hdtn import HDTN_Sender
 import time
 import logging
 
-logging.basicConfig(level=logging.INFO)
-
 settings = {
     "eid": "ipn:1.1",
     "dest_host": "localhost",
     "dest_eid": "ipn:2.1",
 }
 
-def on_item_sent(item):
-    print("Sent item:", item)
+logging.basicConfig(level=logging.INFO)
 
 # Setting up an HDTN instance
-hdtn = HDTN_Sender(settings, hdtn_root="../HDTN", send_callback=on_item_sent)
+hdtn = HDTN_Sender(settings, hdtn_root="../HDTN")
 
 # Start hdtn
 hdtn.start()
 
-# Send a file
-hdtn.send_item("test_files/test.txt")
-time.sleep(5)
+time.sleep(2)
 
-# Send a directory
-hdtn.send_item("test_files/test_dir")
+hdtn.send_item("srv")
 
-# Busy wait
+time.sleep(20)
+
+hdtn.send_item("kill.sh")
+
 while True:
     time.sleep(2)
+    print("Sent items:", hdtn.sent_items)
